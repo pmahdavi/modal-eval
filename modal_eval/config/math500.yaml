@@ -1,0 +1,20 @@
+# Math500 benchmark configuration
+env_id: math500
+
+infra:
+  gpu: "A100-80GB"
+
+vllm:
+  max_model_len: 16384
+  tensor_parallel_size: 1
+  data_parallel_size: 1
+
+sampling:
+  temperature: 0.7
+  max_tokens: 8192
+
+eval:
+  rollouts: 4
+  num_examples: 500
+
+chat_template: math

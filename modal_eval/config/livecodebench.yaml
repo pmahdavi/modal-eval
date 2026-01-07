@@ -1,0 +1,23 @@
+# LiveCodeBench benchmark configuration
+# Uses 2x A100 data parallel for throughput
+env_id: livecodebench-modal
+
+infra:
+  gpu: "A100-80GB:2"
+
+vllm:
+  max_model_len: 40960
+  tensor_parallel_size: 1
+  data_parallel_size: 2
+
+sampling:
+  temperature: 1.0
+  max_tokens: 32768
+
+eval:
+  rollouts: 2
+
+chat_template: code
+
+env_args:
+  sandbox_backend: modal

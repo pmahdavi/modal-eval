@@ -1,0 +1,18 @@
+# IFEval benchmark configuration
+# Uses 2x A100 data parallel for throughput
+env_id: ifeval
+
+infra:
+  gpu: "A100-80GB:2"
+
+vllm:
+  max_model_len: 40960
+  tensor_parallel_size: 1
+  data_parallel_size: 2
+
+sampling:
+  temperature: 0.7
+  max_tokens: 32768
+
+eval:
+  rollouts: 4

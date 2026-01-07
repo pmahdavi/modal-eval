@@ -1,0 +1,148 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "modal-eval"
+dynamic = ["version"]
+description = "Unified LLM evaluation on Modal with vLLM serving"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Your Name", email = "your@email.com" }
+]
+keywords = ["llm", "evaluation", "modal", "vllm", "benchmarks", "livecodebench", "gsm8k"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    # Core
+    "pydantic>=2.0",           # computed_field requires 2.0+
+    "click>=8.0",              # CLI framework
+    "PyYAML>=6.0",             # Config loading
+
+    # HTTP/Server
+    "httpx>=0.25",             # Async HTTP client with timeout configs
+    "uvicorn>=0.24",           # ASGI server
+    "fastapi>=0.104",          # Proxy server (lifespan context manager)
+
+    # Modal & HuggingFace
+    "modal>=0.64",             # concurrent decorator, web_server
+    "huggingface_hub>=0.20",   # Template resolution, file_exists
+]
+
+[project.optional-dependencies]
+hub = [
+    "datasets>=2.14",          # Push eval results to HF Hub
+]
+vf-eval = [
+    "verifiers @ git+https://github.com/pmahdavi/verifiers.git@feature/checkpoint-resume",
+    "prime",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "types-PyYAML",
+]
+all = [
+    "modal-eval[hub,vf-eval,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/modal-eval"
+Repository = "https://github.com/your-org/modal-eval"
+Documentation = "https://github.com/your-org/modal-eval#readme"
+Issues = "https://github.com/your-org/modal-eval/issues"
+
+[project.scripts]
+modal-eval = "modal_eval.cli:cli"
+
+# Convenience aliases
+me = "modal_eval.cli:cli"
+me-proxy = "modal_eval.proxy:main"
+
+[tool.hatch.version]
+path = "modal_eval/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["modal_eval"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "modal_eval/**/*.py",
+    "modal_eval/config/*.yaml",
+    "modal_eval/templates/*.jinja",
+    "modal_eval/py.typed",
+]
+
+[tool.hatch.envs.default]
+features = ["dev"]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+lint = "ruff check modal_eval"
+format = "ruff format modal_eval"
+typecheck = "mypy modal_eval"
+
+# Ruff - fast Python linter
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument (Click uses this)
+    "ARG001", # unused function argument (common in CLI callbacks)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["modal_eval"]
+
+# MyPy - static type checker
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "modal.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "huggingface_hub.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning:httpx.*:",
+]
