@@ -92,6 +92,54 @@ def load_results(eval_dir: Path) -> list[dict]:
     return records
 
 
+def calculate_pass_at_n_metrics(records: list[dict]) -> dict:
+    """Calculate pass@N and avg@N metrics from a list of records.
+
+    Groups records by example_id and calculates:
+    - pass_n: Fraction of examples where at least one rollout has reward=1.0
+    - avg_n: Average reward across all rollouts (equivalent to pass@1)
+    - num_problems: Number of unique example_ids
+    - rollouts_per_problem: Average number of rollouts per example
+
+    Args:
+        records: List of record dicts with example_id and reward fields
+
+    Returns:
+        Dict with pass_n, avg_n, num_problems, rollouts_per_problem
+    """
+    from collections import defaultdict
+
+    if not records:
+        return {"pass_n": 0.0, "avg_n": 0.0, "num_problems": 0, "rollouts_per_problem": 0}
+
+    # Group by example_id
+    by_example: dict[int, list[float]] = defaultdict(list)
+    for r in records:
+        example_id = r.get("example_id", 0)
+        reward = r.get("reward", 0.0)
+        by_example[example_id].append(reward)
+
+    num_problems = len(by_example)
+
+    # Calculate pass@N: fraction where at least one rollout is correct
+    num_passed = sum(1 for rewards in by_example.values() if any(r == 1.0 for r in rewards))
+    pass_n = num_passed / num_problems if num_problems > 0 else 0.0
+
+    # Calculate avg@N: average reward across all rollouts
+    all_rewards = [r.get("reward", 0.0) for r in records]
+    avg_n = sum(all_rewards) / len(all_rewards) if all_rewards else 0.0
+
+    # Calculate average rollouts per problem
+    rollouts_per_problem = len(records) // num_problems if num_problems > 0 else 0
+
+    return {
+        "pass_n": pass_n,
+        "avg_n": avg_n,
+        "num_problems": num_problems,
+        "rollouts_per_problem": rollouts_per_problem,
+    }
+
+
 def generate_dataset_name(
     metadata: dict, results_dir: Path, hf_username: str | None = None
 ) -> str:
@@ -196,11 +244,11 @@ def list_eval_runs(evals_dir: Path) -> list[dict]:
     return runs
 
 
-def generate_leaderboard_card(
+def generate_livecodebench_leaderboard_card(
     model_metrics: list[dict],
     benchmark: str = "LiveCodeBench",
 ) -> str:
-    """Generate a leaderboard-style dataset card README.
+    """Generate a LiveCodeBench-style leaderboard dataset card README.
 
     Args:
         model_metrics: List of dicts with model, pass1, pass_rate, test_cases, etc.
@@ -324,6 +372,178 @@ If you use this dataset, please cite the original LiveCodeBench paper:
     return readme
 
 
+def generate_aime_leaderboard_card(
+    model_metrics: list[dict],
+    num_problems: int = 30,
+    rollouts_per_problem: int = 32,
+) -> str:
+    """Generate an AIME-style leaderboard dataset card README.
+
+    Args:
+        model_metrics: List of dicts with model, pass_n, avg_n, num_problems, rollouts
+        num_problems: Number of problems in the benchmark
+        rollouts_per_problem: Number of rollouts per problem
+
+    Returns:
+        Markdown string for the README
+    """
+    # Sort by pass@N descending, then by avg@N
+    sorted_metrics = sorted(
+        model_metrics,
+        key=lambda x: (x.get("pass_n", 0), x.get("avg_n", 0)),
+        reverse=True,
+    )
+
+    # Build leaderboard table
+    table_rows = []
+    for m in sorted_metrics:
+        model_link = f"[{m['model']}](https://huggingface.co/{m['model']})"
+        pass_n = f"{m.get('pass_n', 0)*100:.1f}%"
+        avg_n = f"{m.get('avg_n', 0)*100:.1f}%"
+        table_rows.append(f"| {model_link} | {pass_n} | {avg_n} |")
+
+    table = "\n".join(table_rows)
+
+    # Build ASCII bar chart (using pass@N)
+    max_width = 50
+    chart_lines = []
+    for m in sorted_metrics:
+        short_name = m["model"].split("/")[-1][:25].ljust(25)
+        bar_width = int(m.get("pass_n", 0) * max_width)
+        bar = "█" * bar_width
+        pct = f"{m.get('pass_n', 0)*100:.1f}%"
+        chart_lines.append(f"{short_name} {bar} {pct}")
+
+    chart = "\n".join(chart_lines)
+
+    num_models = len(model_metrics)
+    total_rollouts = num_problems * rollouts_per_problem
+
+    readme = f"""---
+license: apache-2.0
+task_categories:
+  - text-generation
+language:
+  - en
+tags:
+  - math
+  - evaluation
+  - aime
+  - benchmark
+  - leaderboard
+size_categories:
+  - 1K<n<10K
+---
+
+# AIME 2025 Evaluation Leaderboard
+
+Evaluation results for {num_models} models on AIME 2025 with {num_problems} problems and {rollouts_per_problem} rollouts per problem.
+
+## Leaderboard
+
+| Model | pass@{rollouts_per_problem} | avg@{rollouts_per_problem} |
+|-------|------------|------------|
+{table}
+
+**Metrics:**
+- **pass@{rollouts_per_problem}**: Fraction of problems where at least 1 of {rollouts_per_problem} rollouts got the correct answer
+- **avg@{rollouts_per_problem}**: Average accuracy across all rollouts (equivalent to pass@1 with temperature sampling)
+
+## Performance Chart (pass@{rollouts_per_problem})
+
+```
+{chart}
+```
+
+## Dataset Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `model` | string | Model identifier (e.g., "allenai/Olmo-3-7B-Think") |
+| `example_id` | int | Problem ID (0-{num_problems - 1}) |
+| `prompt` | list[dict] | Chat messages input |
+| `completion` | list[dict] | Model response |
+| `reward` | float | 1.0 if correct, 0.0 otherwise |
+| `metadata` | dict | Additional fields: answer, generation_ms, etc. |
+
+## Usage
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("pmahdavi/aime2025-leaderboard", split="train")
+
+# Filter by model
+qwen_results = ds.filter(lambda x: "Qwen" in x["model"])
+
+# Get all correct answers
+correct = ds.filter(lambda x: x["reward"] == 1.0)
+
+# Calculate pass@{rollouts_per_problem} for a model
+model_data = ds.filter(lambda x: x["model"] == "allenai/Olmo-3-7B-RL-Zero-Math")
+from collections import defaultdict
+by_problem = defaultdict(list)
+for ex in model_data:
+    by_problem[ex["example_id"]].append(ex["reward"])
+pass_n = sum(1 for rewards in by_problem.values() if any(r == 1.0 for r in rewards)) / len(by_problem)
+print(f"pass@{rollouts_per_problem}: {{pass_n:.1%}}")
+```
+
+## Evaluation Details
+
+- **Benchmark**: AIME 2025 (American Invitational Mathematics Examination)
+- **Problems**: {num_problems}
+- **Rollouts per problem**: {rollouts_per_problem}
+- **Temperature**: 0.8
+- **Top-p**: 0.95
+- **Max tokens**: 28672
+
+## Citation
+
+If you use this dataset, please cite:
+
+```bibtex
+@misc{{aime2025eval,
+  title={{AIME 2025 Model Evaluation Leaderboard}},
+  author={{Mahdavi, Parsa}},
+  year={{2025}},
+  howpublished={{\\url{{https://huggingface.co/datasets/pmahdavi/aime2025-leaderboard}}}}
+}}
+```
+"""
+    return readme
+
+
+def generate_leaderboard_card(
+    model_metrics: list[dict],
+    benchmark: str,
+    num_problems: int = 30,
+    rollouts_per_problem: int = 32,
+) -> str:
+    """Dispatch to the appropriate leaderboard card generator based on benchmark.
+
+    Args:
+        model_metrics: List of dicts with model metrics
+        benchmark: Benchmark env_id (e.g., "aime2025", "livecodebench-modal")
+        num_problems: Number of problems (for AIME)
+        rollouts_per_problem: Number of rollouts per problem (for AIME)
+
+    Returns:
+        Markdown string for the README
+    """
+    if benchmark.startswith("aime"):
+        return generate_aime_leaderboard_card(
+            model_metrics,
+            num_problems=num_problems,
+            rollouts_per_problem=rollouts_per_problem,
+        )
+    elif "livecodebench" in benchmark.lower():
+        return generate_livecodebench_leaderboard_card(model_metrics, benchmark)
+    else:
+        # Default to LiveCodeBench format for unknown benchmarks
+        return generate_livecodebench_leaderboard_card(model_metrics, benchmark)
+
+
 def transform_record_for_combine(record: dict, model: str) -> dict:
     """Transform a record to the simplified schema for combined datasets.
 
@@ -377,6 +597,8 @@ def push_combined_evals_to_hf(
     run_configs: dict[str, dict] = {}  # model_slug -> config
     model_metrics: list[dict] = []  # For leaderboard generation
     benchmark = "LiveCodeBench"
+    num_problems = 30
+    rollouts_per_problem = 32
 
     logger.info(f"Combining {len(eval_dirs)} eval runs...")
 
@@ -393,6 +615,8 @@ def push_combined_evals_to_hf(
         model = metadata.get("model", "unknown")
         model_slug = slugify(model)
         benchmark = metadata.get("env_id", benchmark)
+        num_problems = metadata.get("num_examples", num_problems)
+        rollouts_per_problem = metadata.get("rollouts_per_example", rollouts_per_problem)
 
         logger.info(f"  Loading {model}...")
 
@@ -401,23 +625,38 @@ def push_combined_evals_to_hf(
         if config:
             run_configs[model_slug] = config
 
-        # Collect metrics for leaderboard
+        # Load results first (needed for AIME metrics)
+        results = load_results(eval_dir)
+
+        # Collect metrics for leaderboard (both formats for dispatcher)
         avg_metrics = metadata.get("avg_metrics", {})
-        model_metrics.append({
+        metrics = {
             "model": model,
+            # LiveCodeBench metrics
             "pass1": metadata.get("avg_reward", 0.0),
             "pass_rate": avg_metrics.get("pass_rate", 0.0),
             "test_cases": avg_metrics.get("num_test_cases", 0.0),
             "num_examples": metadata.get("num_examples", 0),
-        })
+        }
 
-        # Load and transform records
-        results = load_results(eval_dir)
+        # Calculate AIME metrics from results
+        if benchmark.startswith("aime"):
+            pass_n_metrics = calculate_pass_at_n_metrics(results)
+            metrics["pass_n"] = pass_n_metrics["pass_n"]
+            metrics["avg_n"] = pass_n_metrics["avg_n"]
+        else:
+            # For non-AIME, use avg_reward as avg_n
+            metrics["pass_n"] = metadata.get("avg_reward", 0.0)
+            metrics["avg_n"] = metadata.get("avg_reward", 0.0)
+
+        model_metrics.append(metrics)
+
+        # Transform and collect records
         for record in results:
             simplified = transform_record_for_combine(record, model)
             all_records.append(simplified)
 
-        logger.info(f"    Loaded {len(results)} examples (pass@1: {metadata.get('avg_reward', 0):.1%})")
+        logger.info(f"    Loaded {len(results)} examples (avg: {metadata.get('avg_reward', 0):.1%})")
 
     if not all_records:
         logger.error("No records found in any eval directory")
@@ -425,8 +664,13 @@ def push_combined_evals_to_hf(
 
     logger.info(f"\nTotal: {len(all_records)} examples from {len(model_metrics)} models")
 
-    # Generate README
-    readme_content = generate_leaderboard_card(model_metrics, benchmark)
+    # Generate README with benchmark-appropriate format
+    readme_content = generate_leaderboard_card(
+        model_metrics,
+        benchmark,
+        num_problems=num_problems,
+        rollouts_per_problem=rollouts_per_problem,
+    )
 
     if dry_run:
         visibility = "private" if private else "public"
@@ -516,6 +760,8 @@ def append_evals_to_hf(
     new_records = []
     new_model_metrics: list[dict] = []
     benchmark = "LiveCodeBench"
+    num_problems = 30
+    rollouts_per_problem = 32
 
     logger.info(f"\nLoading {len(eval_dirs)} new eval runs...")
 
@@ -531,6 +777,8 @@ def append_evals_to_hf(
 
         model = metadata.get("model", "unknown")
         benchmark = metadata.get("env_id", benchmark)
+        num_problems = metadata.get("num_examples", num_problems)
+        rollouts_per_problem = metadata.get("rollouts_per_example", rollouts_per_problem)
 
         # Check for duplicate
         if model in existing_models:
@@ -539,23 +787,37 @@ def append_evals_to_hf(
 
         logger.info(f"  Loading {model}...")
 
-        # Collect metrics for leaderboard
+        # Load results first (needed for AIME metrics)
+        results = load_results(eval_dir)
+
+        # Collect metrics for leaderboard (both formats)
         avg_metrics = metadata.get("avg_metrics", {})
-        new_model_metrics.append({
+        metrics = {
             "model": model,
+            # LiveCodeBench metrics
             "pass1": metadata.get("avg_reward", 0.0),
             "pass_rate": avg_metrics.get("pass_rate", 0.0),
             "test_cases": avg_metrics.get("num_test_cases", 0.0),
             "num_examples": metadata.get("num_examples", 0),
-        })
+        }
 
-        # Load and transform records
-        results = load_results(eval_dir)
+        # Calculate AIME metrics from results
+        if benchmark.startswith("aime"):
+            pass_n_metrics = calculate_pass_at_n_metrics(results)
+            metrics["pass_n"] = pass_n_metrics["pass_n"]
+            metrics["avg_n"] = pass_n_metrics["avg_n"]
+        else:
+            metrics["pass_n"] = metadata.get("avg_reward", 0.0)
+            metrics["avg_n"] = metadata.get("avg_reward", 0.0)
+
+        new_model_metrics.append(metrics)
+
+        # Transform and collect records
         for record in results:
             simplified = transform_record_for_combine(record, model)
             new_records.append(simplified)
 
-        logger.info(f"    Loaded {len(results)} examples (pass@1: {metadata.get('avg_reward', 0):.1%})")
+        logger.info(f"    Loaded {len(results)} examples (avg: {metadata.get('avg_reward', 0):.1%})")
 
     if not new_records:
         logger.error("No new records to add (all models may already exist)")
@@ -566,9 +828,10 @@ def append_evals_to_hf(
     for model in existing_models:
         model_records = [r for r in existing_records if r.get("model") == model]
         if model_records:
-            rewards = [r.get("reward", 0) for r in model_records]
-            avg_reward = sum(rewards) / len(rewards) if rewards else 0
-            # Try to get pass_rate from metadata column
+            # Calculate pass@N and avg@N from records
+            pass_n_metrics = calculate_pass_at_n_metrics(model_records)
+
+            # Also collect LiveCodeBench metrics from metadata column
             pass_rates = []
             test_cases = []
             for r in model_records:
@@ -578,9 +841,14 @@ def append_evals_to_hf(
                         pass_rates.append(meta["pass_rate"])
                     if "num_test_cases" in meta:
                         test_cases.append(meta["num_test_cases"])
+
             existing_model_metrics.append({
                 "model": model,
-                "pass1": avg_reward,
+                # AIME metrics
+                "pass_n": pass_n_metrics["pass_n"],
+                "avg_n": pass_n_metrics["avg_n"],
+                # LiveCodeBench metrics
+                "pass1": pass_n_metrics["avg_n"],  # avg_n is equivalent to pass@1
                 "pass_rate": sum(pass_rates) / len(pass_rates) if pass_rates else 0,
                 "test_cases": sum(test_cases) / len(test_cases) if test_cases else 0,
                 "num_examples": len(model_records),
@@ -593,8 +861,13 @@ def append_evals_to_hf(
     logger.info(f"\nTotal: {total_records} examples from {len(all_model_metrics)} models")
     logger.info(f"  New models added: {[m['model'] for m in new_model_metrics]}")
 
-    # Generate updated README
-    readme_content = generate_leaderboard_card(all_model_metrics, benchmark)
+    # Generate updated README with benchmark-appropriate format
+    readme_content = generate_leaderboard_card(
+        all_model_metrics,
+        benchmark,
+        num_problems=num_problems,
+        rollouts_per_problem=rollouts_per_problem,
+    )
 
     if dry_run:
         visibility = "private" if private else "public"
