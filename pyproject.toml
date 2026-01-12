@@ -48,6 +48,7 @@ hub = [
 vf-eval = [
     "verifiers @ git+https://github.com/pmahdavi/verifiers.git@feature/checkpoint-resume",
     "prime",
+    "livecodebench-modal @ git+https://github.com/pmahdavi/livecodebench-modal.git",
 ]
 dev = [
     "pytest>=8.0",
@@ -75,6 +76,9 @@ me-proxy = "modal_eval.proxy:main"
 
 [tool.hatch.version]
 path = "modal_eval/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["modal_eval"]

@@ -1,0 +1,13 @@
+Solve the following code problem step by step. The last part of your response should be the solution to the problem in form ```
+python
+CODE
+``` where CODE is the solution for the problem.
+
+{% for message in messages %}{{ '
+
+' if not loop.first else '' }}{{ message['content'] + '
+' }}{% if loop.last and add_generation_prompt %}
+Remember to put your solution inside the ```
+python
+CODE
+``` tags{% endif %}{% endfor %}
