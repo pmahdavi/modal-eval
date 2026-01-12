@@ -22,6 +22,9 @@ Examples:
 
     # Combine multiple evals into a leaderboard dataset
     python -m modal_eval.push_to_hub --combine dir1 dir2 dir3 --name pmahdavi/my-leaderboard
+
+    # Append new evals to an existing leaderboard dataset
+    python -m modal_eval.push_to_hub --append dir1 dir2 --name pmahdavi/my-leaderboard
 """
 
 import argparse
@@ -31,7 +34,7 @@ import logging
 import re
 from pathlib import Path
 
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from huggingface_hub import HfApi
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -474,6 +477,178 @@ def push_combined_evals_to_hf(
     return True
 
 
+def append_evals_to_hf(
+    eval_dirs: list[Path],
+    dataset_name: str,
+    private: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Append new eval runs to an existing leaderboard dataset on HuggingFace.
+
+    Args:
+        eval_dirs: List of paths to new eval result directories to add
+        dataset_name: Name of the existing HuggingFace dataset
+        private: Whether the dataset is private
+        dry_run: If True, only show what would be done
+
+    Returns:
+        True if successful, False otherwise
+    """
+    logger.info(f"Loading existing dataset from HuggingFace: {dataset_name}")
+
+    # Load existing dataset
+    try:
+        existing_ds = load_dataset(dataset_name, split="train")
+        existing_records = list(existing_ds)
+        logger.info(f"  Loaded {len(existing_records)} existing records")
+    except Exception as e:
+        logger.error(f"Failed to load existing dataset: {e}")
+        logger.info("Use --combine instead to create a new dataset")
+        return False
+
+    # Get existing models to check for duplicates
+    existing_models = set()
+    for record in existing_records:
+        existing_models.add(record.get("model", ""))
+    logger.info(f"  Existing models: {sorted(existing_models)}")
+
+    # Load new eval results
+    new_records = []
+    new_model_metrics: list[dict] = []
+    benchmark = "LiveCodeBench"
+
+    logger.info(f"\nLoading {len(eval_dirs)} new eval runs...")
+
+    for eval_dir in eval_dirs:
+        if not eval_dir.exists():
+            logger.error(f"Directory not found: {eval_dir}")
+            return False
+
+        metadata = load_metadata(eval_dir)
+        if not metadata:
+            logger.warning(f"No metadata found in {eval_dir}, skipping")
+            continue
+
+        model = metadata.get("model", "unknown")
+        benchmark = metadata.get("env_id", benchmark)
+
+        # Check for duplicate
+        if model in existing_models:
+            logger.warning(f"  Model {model} already exists in dataset, skipping")
+            continue
+
+        logger.info(f"  Loading {model}...")
+
+        # Collect metrics for leaderboard
+        avg_metrics = metadata.get("avg_metrics", {})
+        new_model_metrics.append({
+            "model": model,
+            "pass1": metadata.get("avg_reward", 0.0),
+            "pass_rate": avg_metrics.get("pass_rate", 0.0),
+            "test_cases": avg_metrics.get("num_test_cases", 0.0),
+            "num_examples": metadata.get("num_examples", 0),
+        })
+
+        # Load and transform records
+        results = load_results(eval_dir)
+        for record in results:
+            simplified = transform_record_for_combine(record, model)
+            new_records.append(simplified)
+
+        logger.info(f"    Loaded {len(results)} examples (pass@1: {metadata.get('avg_reward', 0):.1%})")
+
+    if not new_records:
+        logger.error("No new records to add (all models may already exist)")
+        return False
+
+    # Reconstruct metrics for existing models from records
+    existing_model_metrics = []
+    for model in existing_models:
+        model_records = [r for r in existing_records if r.get("model") == model]
+        if model_records:
+            rewards = [r.get("reward", 0) for r in model_records]
+            avg_reward = sum(rewards) / len(rewards) if rewards else 0
+            # Try to get pass_rate from metadata column
+            pass_rates = []
+            test_cases = []
+            for r in model_records:
+                meta = r.get("metadata", {})
+                if isinstance(meta, dict):
+                    if "pass_rate" in meta:
+                        pass_rates.append(meta["pass_rate"])
+                    if "num_test_cases" in meta:
+                        test_cases.append(meta["num_test_cases"])
+            existing_model_metrics.append({
+                "model": model,
+                "pass1": avg_reward,
+                "pass_rate": sum(pass_rates) / len(pass_rates) if pass_rates else 0,
+                "test_cases": sum(test_cases) / len(test_cases) if test_cases else 0,
+                "num_examples": len(model_records),
+            })
+
+    # Combine all metrics
+    all_model_metrics = existing_model_metrics + new_model_metrics
+    total_records = len(existing_records) + len(new_records)
+
+    logger.info(f"\nTotal: {total_records} examples from {len(all_model_metrics)} models")
+    logger.info(f"  New models added: {[m['model'] for m in new_model_metrics]}")
+
+    # Generate updated README
+    readme_content = generate_leaderboard_card(all_model_metrics, benchmark)
+
+    if dry_run:
+        visibility = "private" if private else "public"
+        logger.info(f"\n[DRY RUN] Would update: {dataset_name} ({visibility})")
+        logger.info(f"[DRY RUN] Dataset would have {total_records} rows (+{len(new_records)} new)")
+        logger.info(f"[DRY RUN] New models: {[m['model'] for m in new_model_metrics]}")
+        logger.info(f"\n[DRY RUN] Updated leaderboard preview:\n")
+        # Show leaderboard section
+        for line in readme_content.split("\n"):
+            if line.startswith("|") or line.startswith("```") or "%" in line:
+                logger.info(line)
+        return True
+
+    # Combine datasets
+    logger.info(f"\nCombining datasets...")
+    new_ds = Dataset.from_list(new_records)
+    combined_ds = concatenate_datasets([existing_ds, new_ds])
+
+    visibility = "private" if private else "public"
+    logger.info(f"Pushing updated dataset to HuggingFace Hub: {dataset_name} ({visibility})")
+    combined_ds.push_to_hub(dataset_name, private=private)
+
+    # Upload updated README
+    api = HfApi()
+    logger.info("Uploading updated README.md...")
+    api.upload_file(
+        path_or_fileobj=io.BytesIO(readme_content.encode("utf-8")),
+        path_in_repo="README.md",
+        repo_id=dataset_name,
+        repo_type="dataset",
+    )
+
+    # Upload config files for new models
+    for eval_dir in eval_dirs:
+        metadata = load_metadata(eval_dir)
+        model = metadata.get("model", "unknown")
+        if model in existing_models:
+            continue  # Skip existing
+        model_slug = slugify(model)
+        config = load_run_config(eval_dir)
+        if config:
+            config_json = json.dumps(config, indent=2)
+            api.upload_file(
+                path_or_fileobj=io.BytesIO(config_json.encode("utf-8")),
+                path_in_repo=f"configs/{model_slug}.json",
+                repo_id=dataset_name,
+                repo_type="dataset",
+            )
+            logger.info(f"  Uploaded configs/{model_slug}.json")
+
+    logger.info(f"\nSuccessfully updated https://huggingface.co/datasets/{dataset_name}")
+    return True
+
+
 def push_eval_to_hf(
     results_dir: Path,
     dataset_name: str | None = None,
@@ -635,6 +810,14 @@ def main():
         metavar="DIR",
         help="Combine multiple eval directories into a single leaderboard dataset",
     )
+    parser.add_argument(
+        "--append",
+        "-a",
+        type=Path,
+        nargs="+",
+        metavar="DIR",
+        help="Append new eval directories to an existing leaderboard dataset",
+    )
 
     args = parser.parse_args()
 
@@ -665,6 +848,19 @@ def main():
 
         success = push_combined_evals_to_hf(
             args.combine,
+            args.name,
+            args.private,
+            args.dry_run,
+        )
+        return 0 if success else 1
+
+    # Append mode
+    if args.append:
+        if not args.name:
+            parser.error("--name is required when using --append")
+
+        success = append_evals_to_hf(
+            args.append,
             args.name,
             args.private,
             args.dry_run,
