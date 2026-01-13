@@ -21,8 +21,9 @@ from .models import BenchmarkConfig, RunConfig
 class ProxyManager:
     """Manages the proxy subprocess with ephemeral port allocation."""
 
-    def __init__(self, modal_url: str):
+    def __init__(self, modal_url: str, log_dir: Optional[Path] = None):
         self.modal_url = modal_url
+        self.log_dir = log_dir
         self.proc: Optional[subprocess.Popen] = None
         self.port: Optional[int] = None
         self.log_path: Optional[Path] = None
@@ -39,7 +40,10 @@ class ProxyManager:
     def start(self, timeout: int = 60) -> int:
         """Start the proxy and return the port."""
         self.port = self._find_free_port()
-        self.log_path = Path(f"proxy_{self.port}.log")
+        if self.log_dir:
+            self.log_path = self.log_dir / "proxy.log"
+        else:
+            self.log_path = Path(f"proxy_{self.port}.log")
         self._log_file = open(self.log_path, "w")
 
         cmd = [
@@ -145,6 +149,8 @@ class EvalRunner:
         self._signal_received = False
         self._original_sigint = None
         self._original_sigterm = None
+        self._modal_logs_proc: Optional[subprocess.Popen] = None
+        self._modal_logs_file = None
 
     def run(self) -> int:
         """Main entry point with guaranteed cleanup."""
@@ -174,12 +180,19 @@ class EvalRunner:
                 ):
                     raise RuntimeError("Deployment failed")
 
+            # Create logs directory
+            log_dir = Path(self.config.checkpoint_dir) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            # Start Modal logs capture in background
+            self._start_modal_logs(log_dir)
+
             # Start proxy (ephemeral port)
-            self.proxy = ProxyManager(self.config.modal_url)
+            self.proxy = ProxyManager(self.config.modal_url, log_dir=log_dir)
             port = self.proxy.start()
 
             # Run vf-eval
-            return self._run_vf_eval(port)
+            return self._run_vf_eval(port, log_dir)
 
         except KeyboardInterrupt:
             print("\n\nInterrupted by user")
@@ -221,11 +234,43 @@ class EvalRunner:
         if self.proxy:
             self.proxy.stop(timeout=30)
 
+        self._stop_modal_logs()
+
         if self.auto_cleanup:
             print(f"Stopping Modal app {self.config.app_name}...")
             ModalLifecycle.stop_by_name(self.config.app_name)
 
-    def _run_vf_eval(self, port: int) -> int:
+    def _start_modal_logs(self, log_dir: Path):
+        """Start background process to capture Modal vLLM logs."""
+        modal_log_path = log_dir / "modal_vllm.log"
+        self._modal_logs_file = open(modal_log_path, "w", buffering=1)
+        try:
+            self._modal_logs_proc = subprocess.Popen(
+                ["modal", "app", "logs", self.config.app_name],
+                stdout=self._modal_logs_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except Exception:
+            self._modal_logs_file.close()
+            self._modal_logs_file = None
+            raise
+
+    def _stop_modal_logs(self):
+        """Stop the Modal logs capture process."""
+        if self._modal_logs_proc:
+            self._modal_logs_proc.terminate()
+            try:
+                self._modal_logs_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._modal_logs_proc.kill()
+                self._modal_logs_proc.wait()
+            self._modal_logs_proc = None
+        if self._modal_logs_file:
+            self._modal_logs_file.close()
+            self._modal_logs_file = None
+
+    def _run_vf_eval(self, port: int, log_dir: Path) -> int:
         """Run vf-eval with all parameters including sampling."""
         base_url = f"http://localhost:{port}/v1"
         env_id = self.config.vf_eval_env_id
@@ -288,7 +333,10 @@ class EvalRunner:
         print(f"Infra:      GPU={self.config.infra.gpu}")
         print(f"Sampling:   temp={self.config.sampling.temperature}, top_p={self.config.sampling.top_p}")
         print(f"Checkpoint: {self.config.checkpoint_dir}")
+        print(f"Logs:       {log_dir}")
         print(f"{'='*60}")
         print(f"Running: {' '.join(cmd)}\n")
 
-        return subprocess.call(cmd)
+        vf_log_path = log_dir / "vf_eval.log"
+        with open(vf_log_path, "w") as log_file:
+            return subprocess.call(cmd, stdout=log_file, stderr=subprocess.STDOUT)
