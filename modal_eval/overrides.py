@@ -41,6 +41,7 @@ FIELD_TYPES: dict[str, dict[str, type]] = {
         "temperature": float,
         "top_p": float,
         "max_tokens": int,
+        "min_tokens": int,
     },
     "eval": {
         "num_examples": int,

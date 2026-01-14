@@ -58,6 +58,7 @@ class SamplingConfig(BaseModel):
     temperature: float = 1.0
     top_p: float = 1.0
     max_tokens: int = 8192
+    min_tokens: int = 0
 
 
 class EvalParams(BaseModel):

@@ -301,9 +301,13 @@ class EvalRunner:
             self.config.checkpoint_dir,
         ]
 
-        # Add top_p via sampling-args if not default
+        # Add non-default sampling params via --sampling-args
+        sampling_args = {}
         if self.config.sampling.top_p != 1.0:
-            sampling_args = {"top_p": self.config.sampling.top_p}
+            sampling_args["top_p"] = self.config.sampling.top_p
+        if self.config.sampling.min_tokens != 0:
+            sampling_args["min_tokens"] = self.config.sampling.min_tokens
+        if sampling_args:
             cmd.extend(["--sampling-args", json.dumps(sampling_args)])
 
         # Default to -1 (all examples) if not specified
@@ -331,7 +335,10 @@ class EvalRunner:
         print(f"Model:      {self.config.model_id}")
         print(f"Benchmark:  {self.config.benchmark_name} (env: {env_id})")
         print(f"Infra:      GPU={self.config.infra.gpu}")
-        print(f"Sampling:   temp={self.config.sampling.temperature}, top_p={self.config.sampling.top_p}")
+        sampling_info = f"temp={self.config.sampling.temperature}, top_p={self.config.sampling.top_p}"
+        if self.config.sampling.min_tokens != 0:
+            sampling_info += f", min_tokens={self.config.sampling.min_tokens}"
+        print(f"Sampling:   {sampling_info}")
         print(f"Checkpoint: {self.config.checkpoint_dir}")
         print(f"Logs:       {log_dir}")
         print(f"{'='*60}")
