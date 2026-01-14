@@ -302,11 +302,16 @@ class EvalRunner:
         ]
 
         # Add non-default sampling params via --sampling-args
+        # Standard OpenAI params go at top level, vLLM-specific params go in extra_body
         sampling_args = {}
         if self.config.sampling.top_p != 1.0:
             sampling_args["top_p"] = self.config.sampling.top_p
+        # vLLM-specific params need extra_body
+        extra_body = {}
         if self.config.sampling.min_tokens != 0:
-            sampling_args["min_tokens"] = self.config.sampling.min_tokens
+            extra_body["min_tokens"] = self.config.sampling.min_tokens
+        if extra_body:
+            sampling_args["extra_body"] = extra_body
         if sampling_args:
             cmd.extend(["--sampling-args", json.dumps(sampling_args)])
 
