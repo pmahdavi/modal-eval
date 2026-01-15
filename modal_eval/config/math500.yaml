@@ -10,11 +10,14 @@ vllm:
   data_parallel_size: 1
 
 sampling:
-  temperature: 0.7
-  max_tokens: 8192
+  temperature: 0.8
+  top_p: 0.95
+  max_tokens: 12000
+  min_tokens: 250
 
 eval:
   rollouts: 4
   num_examples: 500
+  max_concurrent: 48
 
 chat_template: math

@@ -2,17 +2,23 @@
 # Uses 2x A100 data parallel for throughput
 env_id: ifeval
 
+
 infra:
-  gpu: "A100-80GB:2"
+  gpu: "A100-80GB"
 
 vllm:
-  max_model_len: 40960
+  max_model_len: 16384
   tensor_parallel_size: 1
-  data_parallel_size: 2
+  data_parallel_size: 1
 
 sampling:
-  temperature: 0.7
-  max_tokens: 32768
+  temperature: 0.8
+  top_p: 0.95
+  max_tokens: 12000
+  min_tokens: 5
 
 eval:
   rollouts: 4
+  max_concurrent: 64
+
+chat_template: if
