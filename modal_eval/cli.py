@@ -35,7 +35,7 @@ def get_output_dir() -> Path:
 
 
 from .modal_lifecycle import ModalLifecycle
-from .models import RunConfig, model_id_to_slug
+from .models import RunConfig, benchmark_name_to_slug, model_id_to_slug
 from .overrides import parse_dotted_options
 from .registry import get_registry
 from .runner import EvalRunner
@@ -198,7 +198,8 @@ def deploy(model, benchmark):
     registry = get_registry()
     registry.get_benchmark(benchmark)  # Validate benchmark exists
     slug = model_id_to_slug(model)
-    app_name = f"mk-{slug}-{benchmark}"
+    benchmark_slug = benchmark_name_to_slug(benchmark)
+    app_name = f"mk-{slug}-{benchmark_slug}"
 
     if ModalLifecycle.is_deployed(app_name):
         click.echo(f"Already deployed: {app_name}")
@@ -237,7 +238,8 @@ def stop(model, benchmark, stop_all):
         sys.exit(1)
 
     slug = model_id_to_slug(model)
-    base_name = f"mk-{slug}-{benchmark}"
+    benchmark_slug = benchmark_name_to_slug(benchmark)
+    base_name = f"mk-{slug}-{benchmark_slug}"
 
     # Find all matching apps (including those with config hash suffix)
     # Match exactly or with hash suffix (base_name followed by '-' and hash)

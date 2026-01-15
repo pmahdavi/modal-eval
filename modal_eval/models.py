@@ -29,6 +29,16 @@ def model_id_to_slug(model_id: str, max_len: int = 22) -> str:
     return slug
 
 
+def benchmark_name_to_slug(benchmark_name: str, max_len: int | None = None) -> str:
+    """Convert benchmark name to URL-safe slug for Modal app names."""
+    if not benchmark_name or not benchmark_name.strip():
+        raise ValueError("benchmark_name cannot be empty")
+    slug = re.sub(r"[^a-z0-9-]", "-", benchmark_name.lower())
+    if max_len is not None and len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug.rstrip("-")
+
+
 class InfraConfig(BaseModel):
     """Modal infrastructure settings."""
 
@@ -130,7 +140,8 @@ class RunConfig(BaseModel):
         Prefix 'mk-' keeps DNS hostname under 63 chars.
         Full hostname: {modal_workspace}--mk-{slug}-{benchmark}[-{hash}]-serve.modal.run
         """
-        base = f"mk-{self.model_slug}-{self.benchmark_name}"
+        benchmark_slug = benchmark_name_to_slug(self.benchmark_name)
+        base = f"mk-{self.model_slug}-{benchmark_slug}"
         if self.config_hash:
             return f"{base}-{self.config_hash}"
         return base

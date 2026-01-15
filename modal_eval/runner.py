@@ -349,6 +349,15 @@ class EvalRunner:
         print(f"{'='*60}")
         print(f"Running: {' '.join(cmd)}\n")
 
+        env = dict(os.environ)
+        env_paths = [str(Path(__file__).resolve().parent / "envs")]
+        existing_paths = env.get("PYTHONPATH")
+        if existing_paths:
+            env_paths.append(existing_paths)
+        env["PYTHONPATH"] = os.pathsep.join(env_paths)
+
         vf_log_path = log_dir / "vf_eval.log"
         with open(vf_log_path, "w") as log_file:
-            return subprocess.call(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+            return subprocess.call(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env
+            )

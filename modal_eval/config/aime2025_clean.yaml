@@ -1,0 +1,23 @@
+# AIME 2025 benchmark with cleaned prompt (no \boxed{} instruction)
+env_id: aime2025_clean
+
+infra:
+  gpu: "A100-80GB:2"
+
+vllm:
+  max_model_len: 32768
+  tensor_parallel_size: 2
+  data_parallel_size: 1
+
+sampling:
+  temperature: 0.8
+  top_p: 0.95
+  max_tokens: 28672
+  min_tokens: 400
+
+eval:
+  rollouts: 32
+  num_examples: 30
+  max_concurrent: 64
+
+chat_template: math1

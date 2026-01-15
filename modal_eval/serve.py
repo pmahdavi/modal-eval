@@ -115,7 +115,11 @@ def get_config() -> dict:
         return json.loads(config_json)
 
     # We're deploying locally - need to build config from env vars + Registry
-    from modal_eval.models import BenchmarkConfig, model_id_to_slug
+    from modal_eval.models import (
+        BenchmarkConfig,
+        benchmark_name_to_slug,
+        model_id_to_slug,
+    )
     from modal_eval.overrides import compute_config_hash
     from modal_eval.registry import get_registry
 
@@ -161,14 +165,16 @@ def get_config() -> dict:
     )
     print(f"Template source: {template_source}")
 
-    # Generate slug from model_id
+    # Generate slugs for DNS-safe Modal app name
     slug = model_id_to_slug(model_id)
+    benchmark_slug = benchmark_name_to_slug(benchmark_name)
 
     # Build config dict for Modal container
     model_config = {
         "model_id": model_id,
         "slug": slug,
         "benchmark": benchmark_name,
+        "benchmark_slug": benchmark_slug,
         "config_hash": config_hash,  # None if no overrides, 6-char hash otherwise
         # Infra config values
         "gpu": benchmark.infra.gpu,
@@ -204,7 +210,8 @@ MODEL_CONFIG = get_config()
 # Determine app name from config: mk-{slug}-{benchmark}[-{hash}]
 # Prefix 'mk-' keeps DNS hostname under 63 chars
 # Hash is appended when config has CLI overrides
-_base_name = f"mk-{MODEL_CONFIG['slug']}-{MODEL_CONFIG['benchmark']}"
+_benchmark_slug = MODEL_CONFIG.get("benchmark_slug", MODEL_CONFIG["benchmark"])
+_base_name = f"mk-{MODEL_CONFIG['slug']}-{_benchmark_slug}"
 _config_hash = MODEL_CONFIG.get("config_hash")
 APP_NAME = f"{_base_name}-{_config_hash}" if _config_hash else _base_name
 
