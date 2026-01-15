@@ -18,11 +18,11 @@ sampling:
 
 eval:
   rollouts: 4
-  max_concurrent: 48
+  max_concurrent: 32  
 
 chat_template: code1
 force_chat_template: true
 
 env_args:
   sandbox_backend: modal
-  pool_size: 48
+  pool_size: 32
