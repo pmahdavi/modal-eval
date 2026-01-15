@@ -21,6 +21,7 @@ eval:
   max_concurrent: 48
 
 chat_template: code1
+force_chat_template: true
 
 env_args:
   sandbox_backend: modal
