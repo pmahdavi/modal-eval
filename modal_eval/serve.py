@@ -19,7 +19,8 @@ import modal
 
 def resolve_chat_template(
     model_id: str,
-    benchmark_template: str | None = None
+    benchmark_template: str | None = None,
+    force: bool = False,
 ) -> tuple[str | None, str]:
     """
     Resolve chat template with priority:
@@ -28,9 +29,19 @@ def resolve_chat_template(
     3. Benchmark's local template (load from templates/)
     4. Error if none found
 
+    If force=True, skip steps 1-2 and use the benchmark's local template directly.
+
     Returns: (template_content, source_description)
     """
     from huggingface_hub import hf_hub_download, file_exists
+
+    # Force mode: skip HF lookup, use local template directly
+    if force and benchmark_template:
+        local_path = Path(__file__).parent / "templates" / f"{benchmark_template}.jinja"
+        if local_path.exists():
+            print(f"Force using local template: {local_path}")
+            return local_path.read_text(), f"templates/{benchmark_template}.jinja (forced)"
+        raise ValueError(f"Forced template '{benchmark_template}' not found at {local_path}")
 
     # 1. Check tokenizer_config.json for chat_template
     try:
@@ -144,8 +155,9 @@ def get_config() -> dict:
     # 1. tokenizer_config.json chat_template (vLLM auto)
     # 2. HF chat_template.jinja
     # 3. Benchmark's local template
+    # If force_chat_template=True, skip 1-2 and use local template directly
     chat_template_content, template_source = resolve_chat_template(
-        model_id, benchmark.chat_template
+        model_id, benchmark.chat_template, force=benchmark.force_chat_template
     )
     print(f"Template source: {template_source}")
 

@@ -84,6 +84,7 @@ class BenchmarkConfig(BaseModel):
 
     # Optional
     chat_template: Optional[str] = None
+    force_chat_template: bool = False  # Skip HF lookup, use local template
     env_args: dict[str, Any] = Field(default_factory=dict)
 
     @computed_field
