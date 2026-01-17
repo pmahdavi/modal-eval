@@ -4,7 +4,7 @@ LLM evaluation framework on [Modal](https://modal.com) with [vLLM](https://githu
 
 ## Leaderboards
 
-Evaluation results for cross-capability merging of OLMo-3 RL-Zero models:
+Evaluation results for cross-capability merging of OLMo-3 and OLMo-3.1 RL-Zero models:
 
 - **[LiveCodeBench v6](https://huggingface.co/datasets/pmahdavi/livecodebench-merging-leaderboard)** — 454 coding problems, 4 rollouts @ temp=0.8
 - **[AIME 2025](https://huggingface.co/datasets/pmahdavi/aime2025-merging-leaderboard)** — 30 competition math problems, 32 rollouts @ temp=0.8
