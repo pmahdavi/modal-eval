@@ -60,3 +60,6 @@ proxy_*.log
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Analysis outputs
+loop_analysis_results.json
