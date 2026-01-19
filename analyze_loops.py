@@ -5,6 +5,10 @@ Loop Detection in LLM Rollouts
 Standalone script to detect repetitive looping patterns in LLM completions.
 A "loop" is a substring (1-400 chars) that repeats consecutively 20+ times.
 
+Significance Criteria (to filter formatting noise):
+  - Short patterns (< 10 chars): need > 40% coverage to be considered pathological
+  - Long patterns (>= 10 chars): need > 10% coverage to be considered pathological
+
 Dependencies:
     pip install datasets  # Only needed for --dataset mode
     pip install tqdm      # Optional: progress bar
@@ -34,6 +38,39 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
 from typing import Optional
+
+
+# ============================================================================
+# Coverage Thresholds for Significant Loops
+# ============================================================================
+# Short patterns (< 10 chars) like single spaces are often just formatting
+# artifacts (indentation, etc.) and need higher coverage to be considered
+# pathological loops. Longer patterns are more likely to be real failures.
+
+SHORT_PATTERN_THRESHOLD = 10  # Pattern length threshold
+SHORT_PATTERN_MIN_COVERAGE = 40.0  # Short patterns need > 40% coverage
+LONG_PATTERN_MIN_COVERAGE = 10.0  # Long patterns need > 10% coverage
+
+
+def is_significant_loop(pattern_length: int, loop_percentage: float) -> bool:
+    """
+    Determine if a loop is significant based on pattern length and coverage.
+
+    Short patterns (< 10 chars) like spaces or single characters are often
+    just formatting artifacts. They need > 40% coverage to be considered
+    pathological. Longer patterns need > 10% coverage.
+
+    Args:
+        pattern_length: Length of the repeating pattern
+        loop_percentage: Percentage of text covered by this loop
+
+    Returns:
+        True if the loop is significant, False if it's likely noise
+    """
+    if pattern_length < SHORT_PATTERN_THRESHOLD:
+        return loop_percentage > SHORT_PATTERN_MIN_COVERAGE
+    else:
+        return loop_percentage > LONG_PATTERN_MIN_COVERAGE
 
 
 # ============================================================================
@@ -108,21 +145,25 @@ def detect_loops(
     Detect repetitive loops in text using rolling hash algorithm.
 
     A loop is defined as a substring that repeats consecutively
-    at least `min_repetitions` times.
+    at least `min_repetitions` times. Additionally, loops are filtered
+    by significance criteria to exclude formatting noise:
+    - Short patterns (< 10 chars): need > 40% coverage
+    - Long patterns (>= 10 chars): need > 10% coverage
 
     Algorithm: O(n * L) where L = max_pattern_len
     - Precompute rolling hashes for O(1) substring comparison
     - Scan each position, checking patterns of length 1 to max_pattern_len
     - Track the most severe loop (max pattern_length * repetitions)
+    - Filter out insignificant loops based on coverage thresholds
 
     Args:
         text: The input text to analyze
         min_pattern_len: Minimum pattern length to consider (default: 1)
-        max_pattern_len: Maximum pattern length to consider (default: 200)
+        max_pattern_len: Maximum pattern length to consider (default: 400)
         min_repetitions: Minimum consecutive repetitions to count as loop (default: 20)
 
     Returns:
-        LoopDetectionResult with detection metrics
+        LoopDetectionResult with detection metrics (has_loop=False if no significant loops)
     """
     n = len(text)
 
@@ -195,9 +236,17 @@ def detect_loops(
     if not loops:
         return LoopDetectionResult(has_loop=False, text_length=n)
 
+    # Calculate total loop coverage
+    total_loop_chars = sum(loop.total_chars for loop in loops)
+    loop_percentage = total_loop_chars / n * 100
+
     # Find most severe loop
     most_severe = max(loops, key=lambda x: x.total_chars)
-    total_loop_chars = sum(loop.total_chars for loop in loops)
+
+    # Check if the most severe loop is significant
+    # Short patterns need higher coverage to be considered pathological
+    if not is_significant_loop(most_severe.pattern_length, loop_percentage):
+        return LoopDetectionResult(has_loop=False, text_length=n)
 
     # Truncate pattern for display (keep first 50 chars)
     display_pattern = most_severe.pattern
@@ -211,7 +260,7 @@ def detect_loops(
         worst_repetitions=most_severe.repetitions,
         worst_total_chars=most_severe.total_chars,
         total_loop_chars=total_loop_chars,
-        loop_percentage=total_loop_chars / n * 100,
+        loop_percentage=loop_percentage,
         text_length=n,
         all_loops=loops,
     )
