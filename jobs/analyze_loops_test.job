@@ -45,7 +45,7 @@ echo "" |& tee -a $LOG_FILE
 # Install with hub extra for datasets library
 uv sync --extra hub
 
-uv run python analyze_loops.py \
+uv run python scripts/analyze_loops.py \
     --dataset "$DATASET" \
     --sample 100 \
     --workers 4 \

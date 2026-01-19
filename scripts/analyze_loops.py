@@ -13,17 +13,17 @@ Dependencies:
     pip install datasets  # Only needed for --dataset mode
     pip install tqdm      # Optional: progress bar
 
-Usage:
-    python analyze_loops.py --test                              # Run tests
-    python analyze_loops.py --text "hello" * 50                 # Analyze string
-    python analyze_loops.py --file output.txt                   # Analyze file
-    python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard
-    python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard --sample 100
+Usage (from project root):
+    uv run python scripts/analyze_loops.py --test                              # Run tests
+    uv run python scripts/analyze_loops.py --text "hello" * 50                 # Analyze string
+    uv run python scripts/analyze_loops.py --file output.txt                   # Analyze file
+    uv run python scripts/analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard
+    uv run python scripts/analyze_loops.py --dataset pmahdavi/aime2025-merging-leaderboard
 
-Parallel Processing (for large datasets):
-    python analyze_loops.py --dataset <name> --workers 16       # Use 16 CPU cores
-    python analyze_loops.py --dataset <name> -w -1              # Use all available CPUs
-    python analyze_loops.py --dataset <name> -w 16 --batch-size 100  # Custom batch size
+Parallel Processing (for large datasets, use PBS job scripts):
+    uv run python scripts/analyze_loops.py --dataset <name> --workers 16       # Use 16 CPU cores
+    uv run python scripts/analyze_loops.py --dataset <name> -w -1              # Use all available CPUs
+    uv run python scripts/analyze_loops.py --dataset <name> -w 16 --batch-size 100  # Custom batch
 """
 
 from __future__ import annotations

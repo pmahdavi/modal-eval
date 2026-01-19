@@ -1,0 +1,52 @@
+#!/bin/tcsh
+#PBS -l ncpus=16
+#PBS -l mem=32gb
+#PBS -l walltime=12:00:00
+#PBS -q workq@e5-cse-cbgpu01.eecscl.psu.edu
+#PBS -N loop_analysis_aime
+#PBS -M pxm5426@psu.edu
+#PBS -m bea
+#PBS -o /scratch/pxm5426/research/modal-eval/pbs_results/
+#PBS -e /scratch/pxm5426/research/modal-eval/pbs_results/
+
+cd $PBS_O_WORKDIR
+
+# Source environment
+if ( -f ~/.tcshrc ) source ~/.tcshrc
+setenv UV_CACHE_DIR /scratch/pxm5426/.cache/uv
+setenv PYTHONUNBUFFERED 1
+setenv HF_HOME /scratch/pxm5426/work/hf_cache
+
+echo "=============================================="
+echo "Loop Analysis for AIME 2025 Dataset"
+echo "=============================================="
+echo "Job ID: $PBS_JOBID"
+echo "Host: `hostname`"
+echo "Date: `date`"
+echo "Working directory: $PBS_O_WORKDIR"
+echo "CPUs: 16"
+echo ""
+
+# Real-time logging
+mkdir -p logs
+set LOG_FILE = "logs/loop_analysis_aime_$PBS_JOBID.log"
+
+# Run loop analysis on AIME dataset
+# 7,680 rows (8 models x 30 problems x 32 rollouts)
+echo "Starting loop analysis..."
+uv run python scripts/analyze_loops.py \
+    --dataset pmahdavi/aime2025-merging-leaderboard \
+    --output aime_loop_analysis_results.json \
+    --workers 16 \
+    --batch-size 50 \
+    |& tee $LOG_FILE
+
+set EXIT_STATUS = $status
+
+echo ""
+echo "=============================================="
+echo "Job completed at: `date`"
+echo "Exit status: $EXIT_STATUS"
+echo "=============================================="
+
+exit $EXIT_STATUS
