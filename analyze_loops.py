@@ -7,6 +7,7 @@ A "loop" is a substring (1-400 chars) that repeats consecutively 20+ times.
 
 Dependencies:
     pip install datasets  # Only needed for --dataset mode
+    pip install tqdm      # Optional: progress bar
 
 Usage:
     python analyze_loops.py --test                              # Run tests
@@ -14,15 +15,24 @@ Usage:
     python analyze_loops.py --file output.txt                   # Analyze file
     python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard
     python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard --sample 100
+
+Parallel Processing (for large datasets):
+    python analyze_loops.py --dataset <name> --workers 16       # Use 16 CPU cores
+    python analyze_loops.py --dataset <name> -w -1              # Use all available CPUs
+    python analyze_loops.py --dataset <name> -w 16 --batch-size 100  # Custom batch size
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from collections import defaultdict
+from multiprocessing import Pool, cpu_count
 from typing import Optional
 
 
@@ -208,6 +218,115 @@ def detect_loops(
 
 
 # ============================================================================
+# Parallel Processing Helpers
+# ============================================================================
+
+def _worker_init():
+    """
+    Initialize worker process.
+    Ignore SIGINT in workers - let the parent handle it.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _sigterm_handler(signum, frame):
+    """
+    Convert SIGTERM to SystemExit for graceful shutdown.
+    PBS sends SIGTERM when using qdel.
+    """
+    raise SystemExit(f"Received SIGTERM (signal {signum})")
+
+
+@contextmanager
+def _managed_pool(num_workers: int, maxtasksperchild: int = 100, terminate_timeout: float = 5.0):
+    """
+    Context manager for Pool with proper cleanup on errors and signals.
+    """
+    pool = None
+    clean_exit = False
+    try:
+        pool = Pool(
+            processes=num_workers,
+            initializer=_worker_init,
+            maxtasksperchild=maxtasksperchild,
+        )
+        yield pool
+        clean_exit = True
+    finally:
+        if pool is not None:
+            if clean_exit:
+                pool.close()
+                pool.join()
+            else:
+                pool.terminate()
+                deadline = time.time() + terminate_timeout
+                workers = getattr(pool, '_pool', None) or []
+                for worker in workers:
+                    remaining = max(0.1, deadline - time.time())
+                    worker.join(timeout=remaining)
+                    if worker.is_alive():
+                        try:
+                            worker.kill()
+                            worker.join(timeout=1.0)
+                        except (OSError, AttributeError):
+                            pass
+
+
+def _extract_text_from_row(row: dict) -> tuple[str, str, int]:
+    """Extract model, text, and example_id from a dataset row."""
+    model = row.get("model", "unknown")
+    example_id = row.get("example_id", -1)
+    completion = row.get("completion", [])
+    if not completion:
+        return model, "", example_id
+    if isinstance(completion, list) and len(completion) > 0:
+        text = completion[0].get("content", "") if isinstance(completion[0], dict) else str(completion[0])
+    else:
+        text = str(completion)
+    return model, text, example_id
+
+
+def _process_row(row: dict) -> dict:
+    """Process a single row - catches exceptions to prevent worker crashes."""
+    model, text, example_id = _extract_text_from_row(row)
+    if not text:
+        return {"model": model, "example_id": example_id, "skipped": True}
+    try:
+        result = detect_loops(text)
+        return {"model": model, "example_id": example_id, "skipped": False, **result.to_dict()}
+    except Exception as e:
+        return {"model": model, "example_id": example_id, "skipped": True, "error": str(e)}
+
+
+def _process_batch(batch: list[dict]) -> list[dict]:
+    """Process a batch of rows - reduces IPC overhead."""
+    return [_process_row(row) for row in batch]
+
+
+def _update_stats(model_stats: dict, result: dict) -> None:
+    """Update per-model statistics with a result."""
+    model = result["model"]
+    stats = model_stats[model]
+    stats["total"] += 1
+
+    if result.get("has_loop"):
+        stats["with_loops"] += 1
+        stats["total_loop_percentage"] += result.get("loop_percentage", 0)
+
+        if result.get("worst_repetitions", 0) > stats["max_repetitions"]:
+            stats["max_repetitions"] = result["worst_repetitions"]
+            stats["max_pattern"] = result.get("worst_pattern") or ""
+
+        if len(stats["loop_examples"]) < 3:
+            stats["loop_examples"].append({
+                "example_id": result.get("example_id"),
+                "pattern": result.get("worst_pattern"),
+                "repetitions": result.get("worst_repetitions"),
+                "percentage": result.get("loop_percentage"),
+            })
+
+
+# ============================================================================
 # Analysis Functions
 # ============================================================================
 
@@ -240,8 +359,10 @@ def analyze_dataset(
     dataset_name: str,
     sample_size: Optional[int] = None,
     output_file: str = "loop_analysis_results.json",
+    num_workers: int = 1,
+    batch_size: int = 50,
 ):
-    """Analyze a HuggingFace dataset for loops."""
+    """Analyze a HuggingFace dataset for loops with optional parallel processing."""
     try:
         from datasets import load_dataset
     except ImportError:
@@ -249,7 +370,6 @@ def analyze_dataset(
         print("Install it with: pip install datasets")
         sys.exit(1)
 
-    # Optional: try to import tqdm for progress bar
     try:
         from tqdm import tqdm
         has_tqdm = True
@@ -269,7 +389,6 @@ def analyze_dataset(
     else:
         print(f"Analyzing all {len(ds)} rollouts...")
 
-    # Per-model statistics
     model_stats: dict[str, dict] = defaultdict(lambda: {
         "total": 0,
         "with_loops": 0,
@@ -280,58 +399,76 @@ def analyze_dataset(
     })
 
     all_results = []
+    rows = list(ds)
+    total_rows = len(rows)
+    error_count = 0
 
-    # Iterate with or without progress bar
-    iterator = tqdm(ds, desc="Analyzing") if has_tqdm else ds
-    count = 0
+    # Install SIGTERM handler for PBS qdel support
+    original_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
 
-    for row in iterator:
-        count += 1
-        if not has_tqdm and count % 100 == 0:
-            print(f"  Processed {count}/{len(ds)}...")
+    try:
+        if num_workers > 1:
+            # Parallel processing
+            print(f"Using {num_workers} workers with batch size {batch_size}")
+            batches = [rows[i:i + batch_size] for i in range(0, total_rows, batch_size)]
+            total_batches = len(batches)
+            start_time = time.time()
 
-        model = row.get("model", "unknown")
-        completion = row.get("completion", [])
+            try:
+                with _managed_pool(num_workers, maxtasksperchild=100) as pool:
+                    iterator = pool.imap(_process_batch, batches)
+                    if has_tqdm:
+                        iterator = tqdm(iterator, total=total_batches, desc=f"Analyzing ({num_workers} workers)", unit="batch")
 
-        if not completion:
-            continue
+                    for batch_idx, batch_results in enumerate(iterator):
+                        # Progress logging for monitoring
+                        if (batch_idx + 1) % max(1, total_batches // 10) == 0 or batch_idx == total_batches - 1:
+                            processed = min((batch_idx + 1) * batch_size, total_rows)
+                            pct = (batch_idx + 1) / total_batches * 100
+                            elapsed = time.time() - start_time
+                            eta = (elapsed / (batch_idx + 1)) * (total_batches - batch_idx - 1)
+                            print(f"[Progress] {processed}/{total_rows} rows ({pct:.1f}%) | Elapsed: {elapsed/60:.1f}min | ETA: {eta/60:.1f}min", flush=True)
 
-        # Extract text from completion
-        if isinstance(completion, list) and len(completion) > 0:
-            text = completion[0].get("content", "") if isinstance(completion[0], dict) else str(completion[0])
+                        for result in batch_results:
+                            if result.get("error"):
+                                error_count += 1
+                                continue
+                            if result.get("skipped"):
+                                continue
+                            all_results.append(result)
+                            _update_stats(model_stats, result)
+
+            except (KeyboardInterrupt, SystemExit) as e:
+                print(f"\n\nInterrupted ({type(e).__name__}). Saving partial results...")
+
         else:
-            text = str(completion)
+            # Sequential processing
+            iterator = tqdm(rows, desc="Analyzing") if has_tqdm else rows
 
-        if not text:
-            continue
+            try:
+                for idx, row in enumerate(iterator):
+                    if not has_tqdm and (idx + 1) % 100 == 0:
+                        print(f"  Processed {idx + 1}/{total_rows}...")
 
-        result = detect_loops(text)
-        all_results.append({
-            "model": model,
-            "example_id": row.get("example_id", -1),
-            **result.to_dict(),
-        })
+                    result = _process_row(row)
+                    if result.get("error"):
+                        error_count += 1
+                        continue
+                    if result.get("skipped"):
+                        continue
+                    all_results.append(result)
+                    _update_stats(model_stats, result)
 
-        stats = model_stats[model]
-        stats["total"] += 1
+            except (KeyboardInterrupt, SystemExit) as e:
+                print(f"\n\nInterrupted ({type(e).__name__}). Saving partial results...")
 
-        if result.has_loop:
-            stats["with_loops"] += 1
-            stats["total_loop_percentage"] += result.loop_percentage
-
-            if result.worst_repetitions > stats["max_repetitions"]:
-                stats["max_repetitions"] = result.worst_repetitions
-                stats["max_pattern"] = result.worst_pattern or ""
-
-            if len(stats["loop_examples"]) < 3:
-                stats["loop_examples"].append({
-                    "example_id": row.get("example_id"),
-                    "pattern": result.worst_pattern,
-                    "repetitions": result.worst_repetitions,
-                    "percentage": result.loop_percentage,
-                })
+    finally:
+        # Restore original SIGTERM handler
+        signal.signal(signal.SIGTERM, original_sigterm)
 
     # Print summary
+    if error_count > 0:
+        print(f"\nWarning: {error_count} rows had processing errors")
     print("\n" + "=" * 60)
     print("LOOP DETECTION RESULTS BY MODEL")
     print("=" * 60)
@@ -492,6 +629,10 @@ Examples:
   python analyze_loops.py --file completion.txt
   python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard
   python analyze_loops.py --dataset pmahdavi/livecodebench-merging-leaderboard --sample 100
+
+Parallel Processing (for HPC clusters):
+  python analyze_loops.py --dataset <name> --workers 16
+  python analyze_loops.py --dataset <name> -w -1              # Use all CPUs
         """
     )
 
@@ -505,6 +646,10 @@ Examples:
     parser.add_argument("--min-reps", type=int, default=20,
                         help="Minimum repetitions to count as loop (default: 20)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument("--workers", "-w", type=int, default=1,
+                        help="Number of parallel workers (default: 1, -1 for all CPUs)")
+    parser.add_argument("--batch-size", type=int, default=50,
+                        help="Rows per batch for parallel processing (default: 50)")
 
     args = parser.parse_args()
 
@@ -528,7 +673,14 @@ Examples:
             print(json.dumps(result.to_dict(), indent=2))
 
     elif args.dataset:
-        analyze_dataset(args.dataset, sample_size=args.sample, output_file=args.output)
+        num_workers = args.workers if args.workers > 0 else cpu_count()
+        analyze_dataset(
+            args.dataset,
+            sample_size=args.sample,
+            output_file=args.output,
+            num_workers=num_workers,
+            batch_size=args.batch_size,
+        )
 
     else:
         parser.print_help()

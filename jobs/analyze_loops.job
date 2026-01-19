@@ -1,0 +1,63 @@
+#!/bin/tcsh
+#PBS -l ncpus=16
+#PBS -l mem=32gb
+#PBS -l walltime=12:00:00
+#PBS -q workq@e5-cse-cbgpu01.eecscl.psu.edu
+#PBS -N loop_analysis
+#PBS -M pxm5426@psu.edu
+#PBS -m bea
+#PBS -o pbs_results/
+#PBS -e pbs_results/
+
+# Loop Detection Analysis Job
+# Analyzes HuggingFace dataset for repetitive loops using 16 parallel workers
+
+cd $PBS_O_WORKDIR
+
+if ( -f ~/.tcshrc ) source ~/.tcshrc
+
+# Environment setup
+setenv UV_CACHE_DIR /scratch/pxm5426/.cache/uv
+setenv HF_HOME /scratch/pxm5426/work/hf_cache
+setenv PYTHONUNBUFFERED 1
+setenv TOKENIZERS_PARALLELISM false
+
+# Create directories
+mkdir -p logs pbs_results
+
+set LOG_FILE = "logs/loop_analysis_$PBS_JOBID.log"
+
+echo "============================================" |& tee $LOG_FILE
+echo "Loop Analysis Job Started: `date`" |& tee -a $LOG_FILE
+echo "Working directory: $PBS_O_WORKDIR" |& tee -a $LOG_FILE
+echo "CPUs allocated: 16" |& tee -a $LOG_FILE
+echo "============================================" |& tee -a $LOG_FILE
+
+# Run parallel loop analysis
+# Modify DATASET variable as needed
+set DATASET = "pmahdavi/livecodebench-merging-leaderboard"
+set OUTPUT = "loop_analysis_results.json"
+
+echo "Dataset: $DATASET" |& tee -a $LOG_FILE
+echo "Output: $OUTPUT" |& tee -a $LOG_FILE
+echo "" |& tee -a $LOG_FILE
+
+# Install with hub extra for datasets library
+uv sync --extra hub
+
+uv run python analyze_loops.py \
+    --dataset "$DATASET" \
+    --workers 16 \
+    --batch-size 50 \
+    --output "$OUTPUT" \
+    |& tee -a $LOG_FILE
+
+set exit_status = $status
+
+echo "" |& tee -a $LOG_FILE
+echo "============================================" |& tee -a $LOG_FILE
+echo "Job Completed: `date`" |& tee -a $LOG_FILE
+echo "Exit status: $exit_status" |& tee -a $LOG_FILE
+echo "============================================" |& tee -a $LOG_FILE
+
+exit $exit_status
